@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Node.js
@@ -29,31 +29,72 @@ jobs:
         with:
           node-version: 20
 
-      - name: Find project directory
+      - name: Find FitPulse ZIP
+        shell: bash
+        run: |
+          ZIP_FILE=$(find . -maxdepth 2 -type f -iname "fitpulse.zip" | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: fitpulse.zip was not found!"
+            exit 1
+          fi
+
+          echo "Found ZIP: $ZIP_FILE"
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
+
+      - name: Extract FitPulse
+        shell: bash
+        run: |
+          mkdir -p fitpulse-project
+          unzip -o "$ZIP_FILE" -d fitpulse-project
+
+          echo "Extracted files:"
+          find fitpulse-project -maxdepth 3 -type f | head -100
+
+      - name: Locate package.json
         id: project
         shell: bash
         run: |
-          PROJECT_DIR=$(dirname "$(find . -name package.json -not -path './node_modules/*' | head -n 1)")
+          PACKAGE_FILE=$(find fitpulse-project -type f -name "package.json" | head -n 1)
 
-          if [ -z "$PROJECT_DIR" ] || [ "$PROJECT_DIR" = "." ]; then
-            PROJECT_DIR="."
+          if [ -z "$PACKAGE_FILE" ]; then
+            echo "ERROR: package.json was not found inside fitpulse.zip"
+            echo "The ZIP does not appear to contain a Node/Vite project."
+            exit 1
           fi
 
+          PROJECT_DIR=$(dirname "$PACKAGE_FILE")
+
+          echo "package.json found at: $PACKAGE_FILE"
           echo "Project directory: $PROJECT_DIR"
-          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
-        working-directory: ${{ steps.project.outputs.dir }}
+        working-directory: ${{ steps.project.outputs.project_dir }}
         run: npm install
 
       - name: Build FitPulse
-        working-directory: ${{ steps.project.outputs.dir }}
+        working-directory: ${{ steps.project.outputs.project_dir }}
         run: npm run build
 
-      - name: Upload build artifact
+      - name: Verify build
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        shell: bash
+        run: |
+          if [ ! -d "dist" ]; then
+            echo "ERROR: dist folder was not created!"
+            exit 1
+          fi
+
+          echo "Build successful!"
+          echo "Build files:"
+          find dist -maxdepth 2 -type f | head -50
+
+      - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ${{ steps.project.outputs.dir }}/dist
+          path: ${{ steps.project.outputs.project_dir }}/dist
 
   deploy:
     if: github.ref == 'refs/heads/main'
