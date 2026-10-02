@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - main
+
   pull_request:
     branches:
       - main
+
   workflow_dispatch:
 
 permissions:
@@ -30,69 +32,199 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+          cache-dependency-path: '**/package-lock.json'
 
       - name: Find Portfolio ZIP
         shell: bash
         run: |
-          ZIP_FILE=$(find . -maxdepth 2 -type f -iname "hamo-dark-interactive-portfolio.zip" | head -n 1)
+          set -e
+
+          ZIP_FILE=$(find . -maxdepth 3 -type f \
+            -iname "hamo-dark-interactive-portfolio.zip" \
+            | head -n 1)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: hamo-dark-interactive-portfolio.zip was not found!"
+            echo "❌ ERROR: hamo-dark-interactive-portfolio.zip was not found!"
+            echo ""
+            echo "Files found in repository:"
+            find . -maxdepth 3 -type f | head -100
             exit 1
           fi
 
-          echo "Found ZIP: $ZIP_FILE"
+          echo "✅ ZIP found:"
+          echo "$ZIP_FILE"
+
           echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
 
       - name: Extract Portfolio
         shell: bash
         run: |
+          set -e
+
+          rm -rf hamo-dark-project
           mkdir -p hamo-dark-project
+
           unzip -o "$ZIP_FILE" -d hamo-dark-project
+
+          echo ""
+          echo "✅ Portfolio extracted successfully."
+          echo ""
+          echo "Project files:"
+          find hamo-dark-project -maxdepth 4 -type f | head -150
 
       - name: Locate package.json
         id: project
         shell: bash
         run: |
-          PACKAGE_FILE=$(find hamo-dark-project -type f -name "package.json" | head -n 1)
+          set -e
+
+          PACKAGE_FILE=$(find hamo-dark-project \
+            -type f \
+            -name "package.json" \
+            | head -n 1)
 
           if [ -z "$PACKAGE_FILE" ]; then
-            echo "ERROR: package.json was not found!"
+            echo "❌ ERROR: package.json was not found."
+            echo ""
+            echo "The ZIP does not appear to contain a Node/Vite project."
             exit 1
           fi
 
           PROJECT_DIR=$(dirname "$PACKAGE_FILE")
 
-          echo "Project directory: $PROJECT_DIR"
+          echo "✅ package.json found:"
+          echo "$PACKAGE_FILE"
+
+          echo ""
+          echo "Project directory:"
+          echo "$PROJECT_DIR"
+
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Show Node and npm versions
+        shell: bash
+        run: |
+          node --version
+          npm --version
+
+      - name: Show package.json
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        shell: bash
+        run: |
+          echo "===== package.json ====="
+          cat package.json
+          echo "========================"
 
       - name: Install dependencies
         working-directory: ${{ steps.project.outputs.project_dir }}
-        run: npm install
+        shell: bash
+        run: |
+          set -e
+
+          echo "Installing dependencies..."
+
+          npm install \
+            --legacy-peer-deps \
+            --no-audit \
+            --no-fund
+
+          echo "✅ Dependencies installed successfully."
 
       - name: Build Portfolio
         working-directory: ${{ steps.project.outputs.project_dir }}
-        run: npm run build
+        shell: bash
+        run: |
+          set -e
+
+          echo "Starting production build..."
+
+          npm run build
+
+          echo "✅ npm run build completed."
+
+      - name: Find build output
+        id: output
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "Searching for build output..."
+
+          if [ -d "dist" ]; then
+            echo "dist"
+            echo "output_dir=dist" >> "$GITHUB_OUTPUT"
+
+          elif [ -d "build" ]; then
+            echo "build"
+            echo "output_dir=build" >> "$GITHUB_OUTPUT"
+
+          elif [ -d "out" ]; then
+            echo "out"
+            echo "output_dir=out" >> "$GITHUB_OUTPUT"
+
+          else
+            echo "❌ ERROR: No build output directory found."
+            echo ""
+            echo "Project directory:"
+            find . -maxdepth 3 -type f | head -150
+            exit 1
+          fi
 
       - name: Verify build
         working-directory: ${{ steps.project.outputs.project_dir }}
         shell: bash
         run: |
-          if [ ! -d "dist" ]; then
-            echo "ERROR: dist folder was not created!"
+          set -e
+
+          OUTPUT="${{ steps.output.outputs.output_dir }}"
+
+          echo "Build directory: $OUTPUT"
+          echo ""
+
+          if [ ! -d "$OUTPUT" ]; then
+            echo "❌ Build directory does not exist."
             exit 1
           fi
 
-          echo "Build successful!"
+          if [ -z "$(find "$OUTPUT" -type f -print -quit)" ]; then
+            echo "❌ Build directory is empty."
+            exit 1
+          fi
+
+          echo "✅ Build verified successfully."
+          echo ""
+          echo "Build files:"
+          find "$OUTPUT" -maxdepth 3 -type f | head -100
+
+      - name: Prepare GitHub Pages
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -e
+
+          OUTPUT="${{ steps.output.outputs.output_dir }}"
+
+          # GitHub Pages fallback for SPA routing
+          if [ -f "$OUTPUT/index.html" ]; then
+            cp "$OUTPUT/index.html" "$OUTPUT/404.html"
+            echo "✅ Created 404.html for SPA routing."
+          fi
+
+          echo ""
+          echo "Final deployment directory:"
+          ls -la "$OUTPUT"
 
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ${{ steps.project.outputs.project_dir }}/dist
+          path: ${{ steps.project.outputs.project_dir }}/${{ steps.output.outputs.output_dir }}
 
   deploy:
     if: github.ref == 'refs/heads/main'
     needs: build
+
     runs-on: ubuntu-latest
 
     environment:
